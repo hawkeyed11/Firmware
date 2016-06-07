@@ -190,6 +190,8 @@ static uint64_t rc_signal_lost_timestamp;		// Time at which the RC reception was
 
 static float avionics_power_rail_voltage;		// voltage of the avionics power rail
 
+static bool can_arm_without_gps = false;
+
 
 /**
  * The daemon app only briefly exists to start
@@ -365,9 +367,9 @@ int commander_main(int argc, char *argv[])
 
 	if (!strcmp(argv[1], "check")) {
 		int checkres = 0;
-		checkres = preflight_check(&status, &mavlink_log_pub, false, true, &status_flags, &battery);
+		checkres = preflight_check(&status, &mavlink_log_pub, false, true, &status_flags, &battery, false);
 		warnx("Preflight check: %s", (checkres == 0) ? "OK" : "FAILED");
-		checkres = preflight_check(&status, &mavlink_log_pub, true, true, &status_flags, &battery);
+		checkres = preflight_check(&status, &mavlink_log_pub, true, true, &status_flags, &battery, true);
 		warnx("Prearm check: %s", (checkres == 0) ? "OK" : "FAILED");
 		return 0;
 	}
@@ -625,7 +627,8 @@ transition_result_t arm_disarm(bool arm, orb_advert_t *mavlink_log_pub_local, co
 					     true /* fRunPreArmChecks */,
 					     mavlink_log_pub_local,
 					     &status_flags,
-					     avionics_power_rail_voltage);
+					     avionics_power_rail_voltage,
+					     can_arm_without_gps);
 
 	if (arming_res == TRANSITION_CHANGED) {
 		mavlink_log_info(mavlink_log_pub_local, "[cmd] %s by %s", arm ? "ARMED" : "DISARMED", armedBy);
@@ -1492,6 +1495,7 @@ int commander_thread_main(int argc, char *argv[])
 	param_get(_param_autostart_id, &autostart_id);
 	param_get(_param_rc_in_off, &rc_in_off);
 	param_get(_param_arm_without_gps, &arm_without_gps);
+	can_arm_without_gps = (arm_without_gps == 1);
 	status.rc_input_mode = rc_in_off;
 	if (is_hil_setup(autostart_id)) {
 		// HIL configuration selected: real sensors will be disabled
@@ -1501,7 +1505,7 @@ int commander_thread_main(int argc, char *argv[])
 			// sensor diagnostics done continuously, not just at boot so don't warn about any issues just yet
 			status_flags.condition_system_sensors_initialized = Commander::preflightCheck(&mavlink_log_pub, true, true, true, true,
 				checkAirspeed, (status.rc_input_mode == vehicle_status_s::RC_IN_MODE_DEFAULT),
-				(arm_without_gps == 0), false);
+				!can_arm_without_gps, false);
 			set_tune_override(TONE_STARTUP_TUNE); //normal boot tune
 	}
 
@@ -1614,6 +1618,7 @@ int commander_thread_main(int argc, char *argv[])
 			param_get(_param_disarm_land, &disarm_when_landed);
 			param_get(_param_low_bat_act, &low_bat_action);
 			param_get(_param_arm_without_gps, &arm_without_gps);
+			can_arm_without_gps = (arm_without_gps == 1);
 
 			/* Autostart id */
 			param_get(_param_autostart_id, &autostart_id);
@@ -1708,7 +1713,7 @@ int commander_thread_main(int argc, char *argv[])
 					} else {
 						/* check sensors also */
 						(void)Commander::preflightCheck(&mavlink_log_pub, true, true, true, true, chAirspeed,
-								(status.rc_input_mode == vehicle_status_s::RC_IN_MODE_DEFAULT), (arm_without_gps == 0), hotplug_timeout);
+								(status.rc_input_mode == vehicle_status_s::RC_IN_MODE_DEFAULT), !can_arm_without_gps, hotplug_timeout);
 					}
 				}
 
@@ -1813,7 +1818,8 @@ int commander_thread_main(int argc, char *argv[])
 										  true /* fRunPreArmChecks */,
 										  &mavlink_log_pub,
 										  &status_flags,
-										  avionics_power_rail_voltage)) {
+										  avionics_power_rail_voltage,
+										  can_arm_without_gps)) {
 					mavlink_log_info(&mavlink_log_pub, "DISARMED by safety switch");
 					arming_state_changed = true;
 				}
@@ -2089,7 +2095,8 @@ int commander_thread_main(int argc, char *argv[])
 							     true /* fRunPreArmChecks */,
 							     &mavlink_log_pub,
 							     &status_flags,
-							     avionics_power_rail_voltage);
+							     avionics_power_rail_voltage,
+							     can_arm_without_gps);
 
 			if (arming_ret == TRANSITION_CHANGED) {
 				arming_state_changed = true;
@@ -2343,7 +2350,8 @@ int commander_thread_main(int argc, char *argv[])
 									     true /* fRunPreArmChecks */,
 									     &mavlink_log_pub,
 									     &status_flags,
-									     avionics_power_rail_voltage);
+									     avionics_power_rail_voltage,
+									     can_arm_without_gps);
 
 					if (arming_ret == TRANSITION_CHANGED) {
 						arming_state_changed = true;
@@ -2390,7 +2398,8 @@ int commander_thread_main(int argc, char *argv[])
 										     true /* fRunPreArmChecks */,
 										     &mavlink_log_pub,
 										     &status_flags,
-										     avionics_power_rail_voltage);
+										     avionics_power_rail_voltage,
+										     can_arm_without_gps);
 
 						if (arming_ret == TRANSITION_CHANGED) {
 							arming_state_changed = true;
@@ -3662,7 +3671,8 @@ void *commander_low_prio_loop(void *arg)
 											 false /* fRunPreArmChecks */,
 											 &mavlink_log_pub,
 											 &status_flags,
-											 avionics_power_rail_voltage)) {
+											 avionics_power_rail_voltage,
+											 can_arm_without_gps)) {
 						answer_command(cmd, vehicle_command_s::VEHICLE_CMD_RESULT_DENIED, command_ack_pub, command_ack);
 						break;
 					} else {
@@ -3746,7 +3756,7 @@ void *commander_low_prio_loop(void *arg)
 						}
 
 						status_flags.condition_system_sensors_initialized = Commander::preflightCheck(&mavlink_log_pub, true, true, true, true, checkAirspeed,
-							!(status.rc_input_mode >= vehicle_status_s::RC_IN_MODE_OFF), false, hotplug_timeout);
+							!(status.rc_input_mode >= vehicle_status_s::RC_IN_MODE_OFF), !can_arm_without_gps, hotplug_timeout);
 
 						arming_state_transition(&status,
 									&battery,
@@ -3756,7 +3766,8 @@ void *commander_low_prio_loop(void *arg)
 									false /* fRunPreArmChecks */,
 									&mavlink_log_pub,
 									&status_flags,
-								        avionics_power_rail_voltage);
+								        avionics_power_rail_voltage,
+									can_arm_without_gps);
 
 					} else {
 						tune_negative(true);
